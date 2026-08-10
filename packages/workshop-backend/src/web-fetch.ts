@@ -19,11 +19,14 @@
 // only takes effect in production -- an acceptable tradeoff for dev.
 
 import type { AiGatewayConfig } from "./ai-gateway";
+import { htmlToMarkdown } from "./html-to-markdown";
 
 // The bits of the Workers AI binding and gateway config that `webFetch` needs. Kept narrow
 // so the caller can pass a stub in tests without constructing a full Cloudflare.Env.
 export type WebFetchEnv = {
-  ai: Ai;
+  // Absent on deployments with no Workers AI binding (self-hosted standalone). HTML is converted
+  // locally in that case; the binary document formats are reported as unsupported.
+  ai?: Ai;
   gateway: AiGatewayConfig | null;
 };
 
@@ -193,6 +196,19 @@ async function convertToMarkdown(
   const mime = baseContentType(contentType);
   if (!TO_MARKDOWN_MIME_TYPES.has(mime)) {
     return null;
+  }
+
+  // Without the Workers AI binding there is no toMarkdown() to call. HTML — by far the common
+  // case for this tool — converts locally; the binary formats need a real document converter and
+  // say so, rather than returning bytes that would read as corrupted text.
+  if (!env.ai) {
+    if (mime === "text/html" || mime === "application/xhtml+xml") {
+      return await htmlToMarkdown(new TextDecoder().decode(bytes), url);
+    }
+    throw new Error(
+        `Cannot convert ${mime} to Markdown on this deployment: document conversion for ` +
+        `non-HTML formats requires the Workers AI binding, which is not configured. ` +
+        `Re-fetch with raw: true to get the undecoded body.`);
   }
 
   // Build a name from the URL path so toMarkdown's format detection has a hint.
