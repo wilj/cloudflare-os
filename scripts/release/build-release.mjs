@@ -70,10 +70,11 @@ function pinnedWranglerVersion() {
   return pkg.version;
 }
 
-// Builds the Access-mode frontend (VITE_CF_ACCESS_MODE is a build-time flag,
-// workshop-frontend/src/useAuth.ts) — the one asset variant every release carries.
-function buildFrontend() {
-  const env = { ...process.env, VITE_CF_ACCESS_MODE: "true" };
+// Builds one frontend asset variant. VITE_CF_ACCESS_MODE is a build-time flag
+// (workshop-frontend/src/useAuth.ts): "true" expects an identity-aware proxy in front of the
+// origin, anything else leaves the UI on the token/auth-gatekeeper login flow.
+function buildFrontend(accessMode) {
+  const env = { ...process.env, VITE_CF_ACCESS_MODE: String(accessMode) };
   run("pnpm", ["run", "build"], { cwd: FRONTEND_DIR, env });
   return collectAssets(join(FRONTEND_DIR, "dist"));
 }
@@ -91,8 +92,13 @@ function main() {
 
   // 1. Frontend first: the router's wrangler.jsonc points its assets directory at
   //    workshop-frontend/dist, so it must exist before the router's dry-run.
+  //    Two variants ship: `access` for instances behind Cloudflare Access, `standalone` for
+  //    self-hosted ones that sign in through an auth gatekeeper instead. Both are collected
+  //    here; the deploy side picks one. `standalone` is built last so the dist left on disk for
+  //    the router's dry-run is the self-hosted one.
   const assetVariants = {
-    access: buildFrontend(),
+    access: buildFrontend(true),
+    standalone: buildFrontend(false),
   };
   for (const { blobs } of Object.values(assetVariants)) {
     for (const [hash, blob] of blobs) {
