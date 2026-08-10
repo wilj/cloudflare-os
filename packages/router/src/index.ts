@@ -64,11 +64,16 @@ function withContentType(res: Response, ext: string, status?: number): Response 
   return new Response(res.body, { status: status ?? res.status, headers });
 }
 
-function serveIndex(assets: Fetcher, url: URL): Promise<Response> {
+async function serveIndex(assets: Fetcher, url: URL): Promise<Response> {
+  const res = await assets.fetch(new Request(new URL("/index.html", url)));
+  // Only rewrite the status when index.html was actually found. Forcing 200 unconditionally turns
+  // a missing asset directory into a 200 whose body is the words "Not Found" — the deployment
+  // looks healthy from every angle while serving a blank page. Observed for real: regenerating the
+  // config replaced the directory a live bind mount pointed at, and this masked it completely.
+  if (!res.ok) return res;
   // The SPA fallback answers 200, not the underlying status: the route exists, it is just
   // resolved client-side.
-  return assets.fetch(new Request(new URL("/index.html", url)))
-      .then((res) => withContentType(res, ".html", 200));
+  return withContentType(res, ".html", 200);
 }
 
 // Implements `not_found_handling: "single-page-application"` on top of a bare file server.

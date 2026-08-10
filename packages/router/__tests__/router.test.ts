@@ -231,3 +231,26 @@ describe('directory listings are never served', () => {
     expect(await res.text()).toContain('<!doctype html>');
   });
 });
+
+describe('a missing asset directory is not disguised as success', () => {
+  // Regression: forcing the SPA fallback to 200 turned a detached asset directory into a 200
+  // whose body was the string "Not Found". Every health signal stayed green while the app served
+  // a blank page.
+  const empty = () => makeEnv({ ASSETS: diskFetcher({}) });
+
+  it('propagates the failure for an extension-less path', async () => {
+    const res = await get(empty(), '/workspaces', NAV);
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain('<!doctype html>');
+  });
+
+  it('propagates the failure at the root', async () => {
+    expect((await get(empty(), '/', NAV)).status).toBe(404);
+  });
+
+  it('still serves index.html normally when it is present', async () => {
+    const res = await get(makeEnv({ ASSETS: diskFetcher(DIST) }), '/workspaces', NAV);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('<!doctype html>');
+  });
+});
