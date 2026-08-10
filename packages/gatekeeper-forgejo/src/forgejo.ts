@@ -1,18 +1,17 @@
-// Forgejo gatekeeper — sign-in only.
+// Forgejo gatekeeper: sign-in, plus repository access.
 //
-// Copied in shape from gatekeeper-github (which stays untouched) but deliberately narrower in two
-// ways:
+// Copied in shape from gatekeeper-github, which is left untouched.
 //
-//  1. **No capability surface.** v1 exists to authenticate users, so getSupportedResources()
-//     returns nothing and there is no Gatekeeper implementation behind it. Issues, PRs, and
-//     reviews are v2 work against Forgejo's /api/v1, which is Gitea-derived and GitHub-*inspired*
-//     but not compatible.
+// **Tokens are kept only when they are needed.** Forgejo's OAuth2 access tokens are unscoped — its
+// own docs say scopes are "not yet implemented" and that a token "can be used to execute any
+// actions on behalf of the user" — so there is no narrower credential to ask for. A sign-in
+// (`scopes: "auth"`) therefore reads the identity and drops the token without ever storing it; only
+// a capability connection persists one, and that is a real escalation the branch in
+// `acceptAuthCode` makes explicit. An account connected for sign-in never holds a token.
 //
-//  2. **No OAuth tokens are ever persisted.** Forgejo's OAuth2 access tokens are unscoped — its
-//     own docs say scopes are "not yet implemented" and that a token "can be used to execute any
-//     actions on behalf of the user". Sign-in only needs the identity behind the code, so the
-//     token is used once to read userinfo and then dropped. This is a deliberate divergence from
-//     the ported gatekeeper-github code, which stores tokens for API use.
+// Because the token is unscoped, nothing is auto-approvable: an approved write is indistinguishable
+// to Forgejo from the user performing it, so the approval step is the only thing standing between
+// an agent and the whole account. See forgejo-gatekeeper.ts.
 //
 // Identity is reported as issuer + subject rather than email. Forgejo users can change their own
 // email address, so keying an account by it would let an address change silently create a second
@@ -35,9 +34,14 @@ import {
   type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  createPkcePair, discover, exchangeAuthCode, fetchClaims, type ForgejoClaims,
+  createPkcePair, discover, exchangeAuthCode, fetchClaims, refreshTokens,
+  type ForgejoClaims, type TokenSet,
 } from "./forgejo-oidc";
+import type { ForgejoGatekeeperProps } from "./forgejo-gatekeeper";
 import FORGEJO_LOGO_SVG from "./forgejo-logo.svg";
+import TYPES_CODE from "./forgejo-types.txt";
+
+export { ForgejoGatekeeperImpl } from "./forgejo-gatekeeper";
 
 export interface Env {
   BASE_URL?: string;
@@ -60,6 +64,17 @@ const EPHEMERAL_LIFETIME_MS = 2 * 60 * 1000;
 // display name and the address shown in the UI. Forgejo tokens are unscoped regardless of what is
 // requested here, which is exactly why none is kept.
 const AUTH_SCOPES = ["openid", "profile", "email"];
+
+// One repository resource. `grantable` is false: Forgejo issues one unscoped token for the whole
+// account, so there is no narrower authorization to request per resource type, and pretending
+// otherwise in the UI would misrepresent what the user is granting.
+const REPO_RESOURCE = {
+  urlPattern: ":forgejo/:owner/:repo",
+  title: "Forgejo Repository",
+  description:
+      "Read files, issues, and pull requests in a Forgejo repository, and open issues or comment " +
+      "with your approval.",
+};
 
 const FORGEJO_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(FORGEJO_LOGO_SVG)}`;
 
@@ -137,8 +152,8 @@ type StoredNonce = {
   stage: "initiation" | "oauth";
 };
 
-// What the DO keeps after a completed sign-in. Note what is absent: no access token, no refresh
-// token, no code verifier.
+// What the DO keeps after a completed sign-in. For an auth-only grant this is *all* it keeps:
+// no access token, no refresh token, no code verifier.
 type StoredIdentity = {
   issuer: string;
   subject: string;
@@ -242,12 +257,16 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   }
 
   async connectAccount(callback: Fetcher<GatekeeperConnectCallback>,
-                       _options?: GatekeeperConnectOptions): Promise<{ url: string }> {
-    // `options.scopes` is ignored: this vendor has no capability surface, so every connection is
-    // an auth-only one and its grant is transient either way.
+                       options?: GatekeeperConnectOptions): Promise<{ url: string }> {
+    // "auth" is a sign-in: the grant is transient and the token is dropped once the identity has
+    // been read. Anything else is a capability connection, which has to keep the token to reach
+    // the API later. Forgejo's tokens are unscoped, so that is a real escalation -- see the
+    // storage note on UserAccount.
+    const authOnly = options?.scopes === "auth";
     const userObjectId = this.ctx.exports.UserAccount.newUniqueId();
     const initiationNonce = generateNonce();
-    await this.ctx.exports.UserAccount.get(userObjectId).setCallback(callback, initiationNonce);
+    await this.ctx.exports.UserAccount.get(userObjectId)
+        .setCallback(callback, initiationNonce, authOnly);
 
     return {
       url: `${getBaseUrl(this.env)}/${userObjectId.toString()}/${initiationNonce}`,
@@ -255,19 +274,18 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
-    // No capability surface in v1. An empty list also hides the gatekeeper from the connect UI,
-    // which is correct — there is nothing to connect it *to* yet.
-    return [];
+    return [{ ...REPO_RESOURCE, urlPattern: `${getForgejoUrl(this.env)}/:owner/:repo` }];
   }
 
   async getTypeScriptTypes(): Promise<string> {
-    return "";
+    return TYPES_CODE;
   }
 }
 
 export class UserAccount extends DurableObject<Env> {
   async setCallback(callback: Fetcher<GatekeeperConnectCallback>,
-                    initiationNonce: string): Promise<void> {
+                    initiationNonce: string, authOnly = true): Promise<void> {
+    this.ctx.storage.kv.put<boolean>("authOnly", authOnly);
     // Self-destruct if the user never finishes the flow.
     await this.ctx.storage.setAlarm(Date.now() + INITIATION_NONCE_LIFETIME_MS);
     this.ctx.storage.kv.put("callback", callback);
@@ -336,9 +354,17 @@ export class UserAccount extends DurableObject<Env> {
     try {
       claims = await fetchClaims(endpoints, grant.accessToken);
     } finally {
-      // The token has served its only purpose. It is unscoped and can act as the user, so it is
-      // never written to storage — not even transiently — and the verifier goes with it.
       this.ctx.storage.kv.delete("codeVerifier");
+    }
+
+    // Sign-in grants keep nothing: the token is unscoped and can act as the user, so for a flow
+    // that only needed an identity it is dropped here rather than stored "just in case".
+    //
+    // A capability connection has to keep it -- there is no narrower credential Forgejo will
+    // issue. That is a real escalation and it is why this branch exists at all rather than the
+    // token being stored unconditionally: an account connected for sign-in never holds one.
+    if (!this.ctx.storage.kv.get<boolean>("authOnly")) {
+      this.#putTokens(grant);
     }
 
     this.ctx.storage.kv.put<StoredIdentity>("identity", {
@@ -358,10 +384,60 @@ export class UserAccount extends DurableObject<Env> {
       throw error;
     }
 
-    // Sign-in grants are transient: the backend has read the identity out of complete(), so this
-    // DO has nothing left to hold.
-    await this.ctx.storage.setAlarm(Date.now() + EPHEMERAL_LIFETIME_MS);
+    // A sign-in grant is transient: the backend has read the identity out of complete(), so this
+    // DO has nothing left to hold. A capability connection persists instead.
+    if (this.ctx.storage.kv.get<boolean>("authOnly")) {
+      await this.ctx.storage.setAlarm(Date.now() + EPHEMERAL_LIFETIME_MS);
+    } else {
+      await this.ctx.storage.deleteAlarm();
+    }
     return true;
+  }
+
+  #putTokens(tokens: TokenSet): void {
+    this.ctx.storage.kv.put("accessToken", tokens.accessToken);
+    this.ctx.storage.kv.put("expiresAt", tokens.expiresAt);
+    // Forgejo rotates refresh tokens, so whatever came back replaces the previous one.
+    if (tokens.refreshToken) this.ctx.storage.kv.put("refreshToken", tokens.refreshToken);
+    this.ctx.storage.kv.put("expiredNotified", false);
+  }
+
+  // Returns a usable access token, refreshing first when it is due. Callers should not cache the
+  // result beyond a single request.
+  async getAccessToken(): Promise<string> {
+    const token = this.ctx.storage.kv.get<string>("accessToken");
+    if (!token) {
+      throw new Error("This Forgejo account is not connected for API access. Reconnect it.");
+    }
+
+    const expiresAt = this.ctx.storage.kv.get<number | null>("expiresAt");
+    if (expiresAt === null || expiresAt === undefined || Date.now() < expiresAt) return token;
+
+    const refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
+    if (!refreshToken) return token;  // no way to refresh; let the API surface the 401
+
+    const endpoints = await discover(getForgejoUrl(this.env));
+    const refreshed = await refreshTokens({
+      endpoints,
+      refreshToken,
+      clientId: this.env.CLIENT_ID!,
+      clientSecret: this.env.CLIENT_SECRET!,
+    });
+    this.#putTokens(refreshed);
+    return refreshed.accessToken;
+  }
+
+  async getForgejoUrl(): Promise<string> {
+    return getForgejoUrl(this.env);
+  }
+
+  // Told by the gatekeeper when the API rejects our credentials, so the workshop can prompt a
+  // reconnect instead of failing every call silently. Fires the callback at most once.
+  async noteCredentialsExpired(): Promise<void> {
+    if (this.ctx.storage.kv.get<boolean>("expiredNotified")) return;
+    this.ctx.storage.kv.put("expiredNotified", true);
+    const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
+    if (callback) await callback.credentialsExpired();
   }
 
   getIdentity(): StoredIdentity {
@@ -373,12 +449,16 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
+    // Only ever fires for an abandoned flow or a spent sign-in grant. A capability connection has
+    // no alarm set, but guard anyway: dropping its token would break the connection silently.
+    if (this.ctx.storage.kv.get<string>("accessToken")) return;
     await this.ctx.storage.deleteAll();
   }
 
   async revoke(): Promise<void> {
-    // Nothing to revoke at the provider: no token was ever kept. Dropping local state is the whole
-    // of it.
+    // Forgejo exposes no OAuth revocation endpoint, so dropping our copy is all that is available.
+    // The grant itself remains until the user removes the application in Forgejo — worth saying
+    // plainly rather than implying a revoke happened upstream.
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
   }
@@ -421,15 +501,40 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
-    return [];
+    return [{ ...REPO_RESOURCE, urlPattern: `${getForgejoUrl(this.env)}/:owner/:repo` }];
   }
 
   async getGatekeeperClassFor(url: string): Promise<{
     class: DurableObjectClass<Gatekeeper<any>>;
     resource: SupportedResource;
   }> {
-    throw new Error(
-        `The Forgejo gatekeeper provides sign-in only and grants access to no resources (${url}).`);
+    const base = new URL(getForgejoUrl(this.env));
+    const parsed = new URL(url);
+    if (parsed.origin !== base.origin) {
+      throw new Error(
+          `${url} is not on this deployment's Forgejo (${base.origin}).`);
+    }
+
+    // Only /:owner/:repo. Deeper paths (/issues/1, /src/branch/main) are rejected rather than
+    // silently truncated to the repository -- an agent handed a URL it did not ask for is worse
+    // than an error.
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    if (segments.length !== 2) {
+      throw new Error(
+          `${url} is not a Forgejo repository URL. Expected ${base.origin}/<owner>/<repo>.`);
+    }
+    const [owner, repo] = segments;
+
+    const props: ForgejoGatekeeperProps = {
+      userObjectId: this.ctx.props.userObjectId,
+      owner,
+      // Forgejo tolerates a .git suffix in clone URLs; the API does not.
+      repo: repo.replace(/\.git$/, ""),
+    };
+    return {
+      class: this.ctx.exports.ForgejoGatekeeperImpl({ props }),
+      resource: { ...REPO_RESOURCE, urlPattern: `${getForgejoUrl(this.env)}/:owner/:repo` },
+    };
   }
 
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {

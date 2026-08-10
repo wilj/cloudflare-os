@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  ForgejoOidcError, createPkcePair, discover, exchangeAuthCode, fetchClaims,
+  ForgejoOidcError, createPkcePair, discover, exchangeAuthCode, fetchClaims, refreshTokens,
 } from '../src/forgejo-oidc';
 
 const BASE = 'https://forge.example.com';
@@ -92,7 +92,7 @@ describe('token exchange', () => {
       redirectUri: 'https://agents.example.com/gatekeeper/forgejo/oauth',
     });
 
-    expect(result).toEqual({ accessToken: 'tok', idToken: 'jwt' });
+    expect(result).toMatchObject({ accessToken: 'tok', idToken: 'jwt' });
     expect(body?.get('grant_type')).toBe('authorization_code');
     expect(body?.get('code')).toBe('the-code');
     // Without the verifier the exchange is not PKCE-protected at all.
@@ -158,5 +158,52 @@ describe('claims', () => {
   it('surfaces a failed userinfo request', async () => {
     mockFetch(() => new Response('denied', { status: 401 }));
     await expect(fetchClaims(ENDPOINTS, 'tok')).rejects.toBeInstanceOf(ForgejoOidcError);
+  });
+});
+
+
+describe('token lifetime', () => {
+  it('converts expires_in into an absolute deadline, with headroom', () => {
+    // Refresh slightly early rather than discovering expiry mid-request.
+    mockFetch(() => Response.json({ access_token: 'a', expires_in: 3600 }));
+    return exchangeAuthCode({
+      endpoints: ENDPOINTS, code: 'c', codeVerifier: 'v', clientId: 'i', clientSecret: 's',
+      redirectUri: 'r', now: 1_000_000,
+    }).then(t => {
+      expect(t.expiresAt).toBe(1_000_000 + (3600 - 60) * 1000);
+    });
+  });
+
+  it('leaves the deadline null when the provider does not say', async () => {
+    mockFetch(() => Response.json({ access_token: 'a' }));
+    const t = await exchangeAuthCode({
+      endpoints: ENDPOINTS, code: 'c', codeVerifier: 'v', clientId: 'i', clientSecret: 's',
+      redirectUri: 'r',
+    });
+    expect(t.expiresAt).toBeNull();
+    expect(t.refreshToken).toBeNull();
+  });
+
+  it('refreshes with grant_type=refresh_token and returns the rotated token', async () => {
+    // Forgejo rotates refresh tokens; reusing the old one after a refresh fails.
+    let body: URLSearchParams | undefined;
+    mockFetch((_url, init) => {
+      body = new URLSearchParams(init!.body as string);
+      return Response.json({ access_token: 'new', refresh_token: 'rotated', expires_in: 7200 });
+    });
+    const t = await refreshTokens({
+      endpoints: ENDPOINTS, refreshToken: 'old', clientId: 'i', clientSecret: 's', now: 0,
+    });
+    expect(body?.get('grant_type')).toBe('refresh_token');
+    expect(body?.get('refresh_token')).toBe('old');
+    expect(t.accessToken).toBe('new');
+    expect(t.refreshToken).toBe('rotated');
+  });
+
+  it('explains a refused refresh as a revoked grant', async () => {
+    mockFetch(() => new Response('bad', { status: 400 }));
+    await expect(refreshTokens({
+      endpoints: ENDPOINTS, refreshToken: 'old', clientId: 'i', clientSecret: 's',
+    })).rejects.toThrow(/revoked/);
   });
 });

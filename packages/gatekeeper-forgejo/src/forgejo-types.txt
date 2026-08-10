@@ -1,0 +1,90 @@
+// A Forgejo repository. Reads happen immediately; writes are submitted for the user's approval
+// and only take effect once they approve, so a write returns before the change exists upstream.
+interface ForgejoRepo {
+  // Repository metadata: name, description, default branch, visibility.
+  getMetadata(): Promise<ForgejoRepoMetadata>;
+
+  // List files in the repository, recursively, at `ref` (default: the default branch).
+  // Bounded: `truncated` is true when there were more entries than returned.
+  listFiles(options?: {ref?: string, limit?: number}): Promise<ForgejoTreeListing>;
+
+  // Read one text file. Throws if the path is a directory or does not exist.
+  readFile(path: string, options?: {ref?: string}): Promise<ForgejoFile>;
+
+  // List issues. `state` is "open" (default), "closed", or "all".
+  listIssues(options?: {state?: string, limit?: number, labels?: string, q?: string})
+      : Promise<ForgejoIssueSummary[]>;
+
+  // One issue, including its comments.
+  getIssue(number: number): Promise<ForgejoIssueDetail>;
+
+  // List pull requests. `state` is "open" (default), "closed", or "all".
+  listPullRequests(options?: {state?: string, limit?: number}): Promise<ForgejoPullSummary[]>;
+
+  // One pull request, including its comments and diff statistics.
+  getPullRequest(number: number): Promise<ForgejoPullDetail>;
+
+  // --- Writes. Each requires the user's approval and can be reverted. ---
+
+  // Open a new issue. Reverting closes it: Forgejo cannot delete issues.
+  createIssue(title: string, body: string): Promise<void>;
+
+  // Comment on an issue or pull request. Reverting deletes the comment.
+  comment(number: number, body: string): Promise<void>;
+
+  // Close or reopen an issue. Reverting restores the previous state.
+  setIssueState(number: number, state: "open" | "closed"): Promise<void>;
+}
+
+interface ForgejoRepoMetadata {
+  fullName: string;
+  description: string;
+  url: string;
+  defaultBranch: string;
+  isPrivate: boolean;
+  archived: boolean;
+  openIssues: number;
+}
+
+interface ForgejoTreeListing {
+  entries: {path: string, type: "blob" | "tree" | "commit", size?: number}[];
+  // True when the repository has more entries than were returned.
+  truncated: boolean;
+}
+
+interface ForgejoFile {
+  path: string;
+  text: string;
+  size: number;
+}
+
+interface ForgejoIssueSummary {
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  author: string;
+  labels: string[];
+  commentCount: number;
+  createdAt: string;
+}
+
+interface ForgejoIssueDetail extends ForgejoIssueSummary {
+  body: string;
+  comments: {author: string, body: string, createdAt: string}[];
+}
+
+interface ForgejoPullSummary extends ForgejoIssueSummary {
+  draft: boolean;
+  merged: boolean;
+}
+
+interface ForgejoPullDetail extends ForgejoPullSummary {
+  body: string;
+  comments: {author: string, body: string, createdAt: string}[];
+  headRef: string;
+  baseRef: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+}

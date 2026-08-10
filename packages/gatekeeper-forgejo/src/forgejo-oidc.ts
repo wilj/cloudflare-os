@@ -70,6 +70,31 @@ function base64UrlEncode(bytes: Uint8Array): string {
 // The access token is returned so the caller can read the userinfo endpoint with it, and then
 // discarded — see the note in forgejo.ts. Forgejo's OAuth2 tokens are unscoped and can act as the
 // user, so v1 never persists one.
+export type TokenSet = {
+  accessToken: string;
+  idToken: string | null;
+  // Present when the grant is refreshable. Sign-in-only flows discard both regardless.
+  refreshToken: string | null;
+  // Absolute epoch milliseconds, or null when the provider did not say.
+  expiresAt: number | null;
+};
+
+function readTokenSet(json: Record<string, unknown>, now: number): TokenSet {
+  const accessToken = json.access_token;
+  if (typeof accessToken !== "string") {
+    throw new ForgejoOidcError("Forgejo's token response contained no access_token.");
+  }
+  return {
+    accessToken,
+    idToken: typeof json.id_token === "string" ? json.id_token : null,
+    refreshToken: typeof json.refresh_token === "string" ? json.refresh_token : null,
+    // Refresh a little early rather than discovering expiry mid-request.
+    expiresAt: typeof json.expires_in === "number"
+        ? now + Math.max(0, json.expires_in - 60) * 1000
+        : null,
+  };
+}
+
 export async function exchangeAuthCode(options: {
   endpoints: OidcEndpoints;
   code: string;
@@ -77,7 +102,8 @@ export async function exchangeAuthCode(options: {
   clientId: string;
   clientSecret: string;
   redirectUri: string;
-}): Promise<{ accessToken: string; idToken: string | null }> {
+  now?: number;
+}): Promise<TokenSet> {
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     code: options.code,
@@ -98,15 +124,36 @@ export async function exchangeAuthCode(options: {
         `Check that the OAuth application's redirect URI is exactly ${options.redirectUri}.`);
   }
 
-  const json = await res.json() as Record<string, unknown>;
-  const accessToken = json.access_token;
-  if (typeof accessToken !== "string") {
-    throw new ForgejoOidcError("Forgejo's token response contained no access_token.");
+  return readTokenSet(await res.json() as Record<string, unknown>, options.now ?? Date.now());
+}
+
+// Exchanges a refresh token for a fresh access token.
+//
+// Forgejo rotates refresh tokens, so the caller must persist whatever comes back rather than
+// reusing the old one.
+export async function refreshTokens(options: {
+  endpoints: OidcEndpoints;
+  refreshToken: string;
+  clientId: string;
+  clientSecret: string;
+  now?: number;
+}): Promise<TokenSet> {
+  const res = await fetch(options.endpoints.tokenEndpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: options.refreshToken,
+      client_id: options.clientId,
+      client_secret: options.clientSecret,
+    }),
+  });
+  if (!res.ok) {
+    throw new ForgejoOidcError(
+        `Forgejo refused to refresh the access token (${res.status}). The grant was probably ` +
+        `revoked; the user needs to reconnect the account.`);
   }
-  return {
-    accessToken,
-    idToken: typeof json.id_token === "string" ? json.id_token : null,
-  };
+  return readTokenSet(await res.json() as Record<string, unknown>, options.now ?? Date.now());
 }
 
 // Reads the identity claims.
