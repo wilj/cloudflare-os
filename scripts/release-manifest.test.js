@@ -143,9 +143,11 @@ test("worker entries carry the deploy contract", () => {
       google.bindings.find((b) => b.name === "CLIENT_SECRET"),
       { type: "secret_text", name: "CLIENT_SECRET", text: "$SECRET(CLIENT_SECRET)" });
 
-  // gatekeeper-email ships in the release but is not installable (needs Email Routing/a zone).
-  assert.equal(workers["gatekeeper-email"].installable, false);
-  assert.deepEqual(workers["gatekeeper-email"].inputs, []);
+  // gatekeeper-email is installable: a deployment can put its own MTA in front of the
+  // gatekeeper's HTTP ingress instead of Cloudflare Email Routing. It takes no OAuth app -- its
+  // only input is the shared secret that ingress is authenticated with.
+  assert.equal(workers["gatekeeper-email"].installable, true);
+  assert.deepEqual(workers["gatekeeper-email"].inputs.map((i) => i.name), ["INBOUND_SECRET"]);
 
   // gatekeeper-context: closed-beta artifacts binding is cut; its KV is a normal template and
   // no OAuth-app inputs are demanded.

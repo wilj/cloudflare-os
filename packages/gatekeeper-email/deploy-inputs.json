@@ -1,0 +1,12 @@
+[
+  {
+    "name": "INBOUND_SECRET",
+    "kind": "secret",
+    "label": "Inbound ingress secret",
+    "setupSteps": [
+      "This gatekeeper has no OAuth app. The only credential it needs is a shared secret for its inbound HTTP ingress, which the MTA presents when handing over a delivered message.",
+      "Generate a random value and give the same one to the mail server. Self-hosted deployments have this generated for them by deploy/bootstrap.sh.",
+      "Without it the ingress is disabled: it is reachable at the public origin, and delivering a message invokes an agent."
+    ]
+  }
+]

@@ -62,6 +62,16 @@ type Env = Cloudflare.Env & {
   // Base URL (protocol+host+optional path) at which the default fetch handler is served. Should
   // NOT include a trailing slash. Omit for localhost dev server.
   BASE_URL?: string,
+
+  // Domain that addresses are issued under, e.g. "mail.example.com". Mail routing keys only on the
+  // local part, so this affects what the UI shows rather than where mail goes -- but without it
+  // the UI names the Workshop's own origin, which is not where anyone can send mail.
+  EMAIL_HOST?: string,
+
+  // Shared secret for the inbound HTTP ingress. Without it the ingress is disabled: this endpoint
+  // is reachable at the public origin like every other gatekeeper path, and it injects mail
+  // straight into an agent, so it must never be open.
+  INBOUND_SECRET?: string,
 }
 
 function getBaseUrl(env: Env) {
@@ -88,11 +98,10 @@ function getSupportedResourcesList(env: Env): SupportedResource[] {
 const EMAIL_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(EMAIL_LOGO_SVG)}`;
 
 function getEmailHost(env: Env) {
-  // TODO: This is actually a lie, as email routing can be configured on an entirely different
-  //   domain and forwarded to this worker. We only really care about the name before the `@` for
-  //   routing purposes. At present the returned host isn't really used anywhere important so
-  //   maybe we can get rid of this entirely, or maybe we should bring back the env var that
-  //   specifies the default host.
+  // Deployments that receive mail on a different domain from the Workshop set EMAIL_HOST. Falling
+  // back to the Workshop's own origin preserves the previous behaviour, which the original comment
+  // here rightly called a lie: routing keys only on the local part, so the host is display only.
+  if (env.EMAIL_HOST) return stripTrailingSlashes(env.EMAIL_HOST);
   return new URL(getBaseUrl(env)).hostname;
 }
 
@@ -182,12 +191,73 @@ export default {
           "Content-Type": "text/html; charset=utf-8"
         }
       });
+    } else if (relPath === "/inbound" && req.method === "POST") {
+      return handleInbound(req, env, ctx);
     } else {
       return new Response("Not Found", { status: 404 });
     }
   },
 
   async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext) {
+    return deliver(message, env, ctx);
+  },
+};
+
+// HTTP ingress for deployments with no Cloudflare Email Routing in front of them.
+//
+// An MTA hands the raw RFC822 message here along with the SMTP envelope, which is the only
+// trustworthy source of the recipient: the To: header can name anyone, and does for BCC, aliases
+// and list mail. Routing on the header would deliver a stranger's mail into someone's gadget.
+//
+// This path is reachable at the public origin like every other gatekeeper route, and delivery is
+// an agent invocation, so it is authenticated and disabled outright when unconfigured.
+async function handleInbound(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  if (!env.INBOUND_SECRET) {
+    return new Response("Inbound email ingress is not configured.\n", { status: 404 });
+  }
+  const offered = (req.headers.get("Authorization") ?? "").replace(/^Bearer /, "");
+  if (!constantTimeEqual(offered, env.INBOUND_SECRET)) {
+    return new Response("Unauthorized\n", { status: 401 });
+  }
+
+  const to = req.headers.get("X-Envelope-To");
+  const from = req.headers.get("X-Envelope-From");
+  if (!to || !from) {
+    return new Response("X-Envelope-To and X-Envelope-From are required.\n", { status: 400 });
+  }
+
+  const raw = new Uint8Array(await req.arrayBuffer());
+  if (raw.byteLength === 0) {
+    return new Response("Empty message.\n", { status: 400 });
+  }
+
+  // A rejection has to reach the MTA, so it can refuse the message rather than silently drop it.
+  let rejection: string | undefined;
+  const message = {
+    to,
+    from,
+    raw: new Blob([raw]).stream(),
+    rawSize: raw.byteLength,
+    headers: new Headers(),
+    setReject(reason: string) { rejection = reason; },
+    forward: async () => { throw new Error("forwarding is not supported on this deployment"); },
+    reply: async () => { throw new Error("replying is not supported on this deployment"); },
+  } as unknown as ForwardableEmailMessage;
+
+  await deliver(message, env, ctx);
+
+  if (rejection !== undefined) {
+    // 550-shaped: the MTA should reject rather than retry. An unknown recipient or an address with
+    // no subscriber is not a transient condition.
+    return new Response(`${rejection}\n`, { status: 550 });
+  }
+  return new Response("accepted\n", { status: 200 });
+}
+
+// Delivers one inbound message. Shared by the Email Routing `email()` handler and the HTTP
+// ingress, so a self-hosted deployment cannot drift from the hosted path.
+async function deliver(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext) {
+  {
     // Parse the recipient address to extract the local part (username).
     let toAddress = message.to;
     let atIndex = toAddress.indexOf("@");
@@ -247,7 +317,7 @@ export default {
       message.setReject("Delivery failed: " + err);
     }
   }
-};
+}
 
 // =======================================================================================
 // Top-level API exposed to the Workshop.

@@ -49,8 +49,13 @@ const NO_DEFAULT_CRED_INPUTS = new Set([
 ]);
 
 // Not installable on customer instances: Email Routing needs a zone, which workers.dev-hosted
-// instances don't have. The bundle still ships in the release so the entry stays auditable.
-const NOT_INSTALLABLE = new Set(["gatekeeper-email"]);
+// instances don't have.
+//
+// A self-hosted deployment is the case that exclusion did not anticipate: it can put its own MTA
+// in front of the gatekeeper's HTTP ingress and never involve Email Routing at all. The set is
+// kept rather than deleted, because the reasoning still holds for the deployments it was written
+// for.
+const NOT_INSTALLABLE = new Set([]);
 
 // Ambient gatekeepers the deploy service installs on every fresh core deploy, server-side with
 // no user interaction. Members must take no inputs of any kind (enforced below): a preinstall

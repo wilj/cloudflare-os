@@ -196,14 +196,31 @@
       }
     },
     "gatekeeper-email": {
-      "bindings": [],
+      "bindings": [
+        {
+          "name": "INBOUND_SECRET",
+          "text": "$SECRET(INBOUND_SECRET)",
+          "type": "secret_text"
+        }
+      ],
       "compatibilityDate": "2026-02-02",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage",
         "nodejs_als"
       ],
-      "inputs": [],
-      "installable": false,
+      "inputs": [
+        {
+          "kind": "secret",
+          "label": "Inbound ingress secret",
+          "name": "INBOUND_SECRET",
+          "setupSteps": [
+            "This gatekeeper has no OAuth app. The only credential it needs is a shared secret for its inbound HTTP ingress, which the MTA presents when handing over a delivered message.",
+            "Generate a random value and give the same one to the mail server. Self-hosted deployments have this generated for them by deploy/bootstrap.sh.",
+            "Without it the ingress is disabled: it is reachable at the public origin, and delivering a message invokes an agent."
+          ]
+        }
+      ],
+      "installable": true,
       "kind": "gatekeeper",
       "mainModule": "email.js",
       "migrations": [
@@ -235,6 +252,69 @@
       "shortName": "email",
       "vars": {
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/email"
+      }
+    },
+    "gatekeeper-forgejo": {
+      "bindings": [
+        {
+          "name": "CLIENT_ID",
+          "text": "$SECRET(CLIENT_ID)",
+          "type": "secret_text"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "text": "$SECRET(CLIENT_SECRET)",
+          "type": "secret_text"
+        }
+      ],
+      "compatibilityDate": "2026-02-02",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
+      ],
+      "inputs": [
+        {
+          "kind": "secret",
+          "label": "OAuth client ID",
+          "name": "CLIENT_ID"
+        },
+        {
+          "kind": "secret",
+          "label": "OAuth client secret",
+          "name": "CLIENT_SECRET"
+        }
+      ],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "forgejo.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "UserAccount",
+            "ForgejoGatekeeperImpl"
+          ],
+          "tag": "v0"
+        }
+      ],
+      "modules": [
+        {
+          "name": "forgejo.js",
+          "r2Key": "blobs/modules/3a1b88ed1b4f00ac49a842500067b8c90657ae81bc72658c58d4e76388084d29",
+          "sha256": "3a1b88ed1b4f00ac49a842500067b8c90657ae81bc72658c58d4e76388084d29",
+          "size": 60,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "forgejo",
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/forgejo"
       }
     },
     "gatekeeper-github": {
