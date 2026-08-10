@@ -20,7 +20,9 @@
 // gatekeeper, which requests the full scopes and persists the connection.
 
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { GatekeeperConnectCallback, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
+import {
+  AuthenticatedIdentity, GatekeeperConnectCallback, GatekeeperUser,
+} from "@gadgets/workshop-shared/gatekeeper";
 import { createWorkshopLogger } from "../observability";
 import { CLOUDFLARE_VENDOR_ID } from "../user.js";
 import { readAdminConfig } from "../admin-config.js";
@@ -77,6 +79,40 @@ export class PendingLogin extends DurableObject<Cloudflare.Env> {
 
 type LoginCallbackProps = { pendingId: string; vendorId: string };
 
+// Derives the durable account key for an identity-providing gatekeeper.
+//
+// Two constraints shape this. It must be stable across profile edits — so it hashes issuer +
+// subject, never the email, which users can change on providers like Forgejo — and it must contain
+// no colon, because session tokens are "<doName>:<secret>" and PublicApi.authenticate() splits on
+// ":" and requires exactly two parts. A raw "issuer\0subject" key would break that split outright,
+// since OIDC issuers are URLs.
+//
+// The NUL separator keeps the pair unambiguous: without it, issuers and subjects could be
+// re-partitioned to collide.
+export async function deriveAccountKey(identity: AuthenticatedIdentity): Promise<string> {
+  const input = new TextEncoder().encode(`${identity.issuer}\0${identity.subject}`);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", input));
+  // base64url is colon-free by construction; padding is stripped so the key is stable.
+  const base64 = btoa(String.fromCharCode(...digest));
+  return `fj-${base64.replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "")}`;
+}
+
+// Reads the sign-in identity, preferring the stable issuer+subject form where the vendor
+// implements it and falling back to the email-keyed path for vendors that do not.
+async function resolveAccount(account: Fetcher<GatekeeperUser>): Promise<
+    { key: string; email: string | null } | null> {
+  if (typeof account.getAuthenticatedIdentity === "function") {
+    const identity = await account.getAuthenticatedIdentity();
+    if (identity) {
+      return { key: await deriveAccountKey(identity), email: identity.email };
+    }
+  }
+  const email = await account.getAuthenticatedEmail();
+  // Legacy path: the DO name *is* the email. Keeps existing Google/GitHub/Cloudflare accounts
+  // resolving to the same DO they were created under.
+  return email ? { key: email, email } : null;
+}
+
 export class LoginConnectCallbackImpl
     extends WorkerEntrypoint<Cloudflare.Env, LoginCallbackProps>
     implements GatekeeperConnectCallback {
@@ -95,20 +131,21 @@ export class LoginConnectCallbackImpl
     // returns — no explicit disposal needed. We read the verified email to resolve/create the user.
     // The email's local-part seeds the initial display name, like the Cloudflare Access flow.
     try {
-      const email = await account.getAuthenticatedEmail();
-      if (!email) {
+      const resolved = await resolveAccount(account);
+      if (!resolved) {
         loginLogger.info("gatekeeper login finished", {
           event: "gatekeeper.login.finished", outcome: "no_email",
         });
         await pending.fail("This account has no verified email, so it can't be used to sign in.");
         return;
       }
+      const { key, email } = resolved;
       const userStub = this.ctx.exports.UserDurableObject.get(
-          this.ctx.exports.UserDurableObject.idFromName(email));
+          this.ctx.exports.UserDurableObject.idFromName(key));
       // Closed signups block first-time account creation here too (not just password signup); an
       // existing user signing in is unaffected.
       const signupsEnabled = (await readAdminConfig(this.env)).signupsEnabled;
-      const secret = await userStub.loginOrCreateViaGatekeeper(email, signupsEnabled);
+      const secret = await userStub.loginOrCreateViaGatekeeper(key, email, signupsEnabled);
       if (secret === null) {
         loginLogger.info("gatekeeper login finished", {
           event: "gatekeeper.login.finished", outcome: "signups_disabled",
@@ -123,8 +160,9 @@ export class LoginConnectCallbackImpl
         await userStub.linkConnectedAccountFromLogin(account, this.ctx.props.vendorId, expiresAt);
       }
       // Session tokens are "<doName>:<secret>"; PublicApi.authenticate() routes via idFromName of
-      // the first part. The user DO is keyed by email, so the prefix must be the email.
-      await pending.deliver(`${email}:${secret}`);
+      // the first part, so the prefix must be the DO name — the derived account key, which is
+      // colon-free by construction.
+      await pending.deliver(`${key}:${secret}`);
       loginLogger.info("gatekeeper login finished", {
         event: "gatekeeper.login.finished", outcome: "ok",
       });

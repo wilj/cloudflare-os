@@ -130,6 +130,25 @@ export function boundAgentCatalog(
   };
 }
 
+// A stable sign-in identity from an auth-providing gatekeeper.
+//
+// `issuer` and `subject` together are the durable key; `email` is current-at-this-moment profile
+// data that the user may change at any time. See GatekeeperUser.getAuthenticatedIdentity().
+export type AuthenticatedIdentity = {
+  // The OIDC issuer, e.g. "https://forge.example.com". Scopes `subject`, which is only unique
+  // within one provider.
+  issuer: string;
+
+  // The provider's immutable identifier for this user — OIDC `sub`. Not the username or email,
+  // both of which users can usually change.
+  subject: string;
+
+  // The account's current verified email, for display and to seed the initial display name. Null
+  // when the provider reports none, which is not itself a reason to refuse sign-in: the account
+  // is keyed by issuer + subject, not by this.
+  email: string | null;
+};
+
 // Describes a connected user account on an external service, for display purposes.
 export type AccountDescription = {
   // User's display name, e.g. "John Doe". This is a non-unique name that is human-readable.
@@ -536,6 +555,17 @@ export interface GatekeeperUser extends WorkerEntrypoint {
   // Workshop keys accounts by email, so an unverified address would allow account takeover.
   // Returns null when the account has no verified email or the vendor does not support auth.
   getAuthenticatedEmail(): Promise<string | null>;
+
+  // For vendors that advertise `providesAuth`, returns the stable identity behind the sign-in.
+  //
+  // Preferred over getAuthenticatedEmail() where implemented, because email is not a durable
+  // identifier: on providers where users control their own address (Forgejo, for one), keying the
+  // account by email means an address change silently creates a second account and abandons the
+  // first one's workspaces. `issuer` + `subject` is the pair OIDC guarantees stable, and `sub` is
+  // the only claim third-party integrations treat as secure.
+  //
+  // Optional so existing vendors need no change; callers fall back to getAuthenticatedEmail().
+  getAuthenticatedIdentity?(): Promise<AuthenticatedIdentity | null>;
 
   // Get a `GatekeeperUserVerifier` representing this user.
   getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>>;
