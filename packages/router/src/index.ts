@@ -79,7 +79,11 @@ async function serveAssets(assets: Fetcher, req: Request, url: URL): Promise<Res
 
   // A path with no file extension is a client-side route, and `/` is a directory -- which a bare
   // file server answers with a JSON listing rather than index.html. Neither is worth asking about.
-  if (ext === "" && isNavigation) return serveIndex(assets, url);
+  //
+  // Deliberately not conditioned on the request looking like a navigation: a plain `GET /` with no
+  // Accept header would otherwise be answered with that directory listing, publishing the contents
+  // of the asset directory to anyone who asks.
+  if (ext === "") return serveIndex(assets, url);
 
   const res = await assets.fetch(req);
   if (res.ok) return withContentType(res, ext);

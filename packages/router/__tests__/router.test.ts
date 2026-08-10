@@ -219,3 +219,15 @@ describe('wrangler.jsonc contract', () => {
     });
   });
 });
+
+describe('directory listings are never served', () => {
+  // A bare file server answers a directory with a JSON listing. Serving that would publish the
+  // contents of the asset directory to anyone who asks, so extension-less paths always resolve to
+  // index.html regardless of what the client says it accepts.
+  it('serves index.html at / even without an Accept header', async () => {
+    const env = makeEnv({ ASSETS: diskFetcher(DIST) });
+    const res = await get(env, '/');
+    expect(res.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    expect(await res.text()).toContain('<!doctype html>');
+  });
+});
