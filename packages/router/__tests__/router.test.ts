@@ -82,6 +82,93 @@ describe('router fetch', () => {
   });
 });
 
+// Standalone workerd has no `assets` binding. A `disk` service serves the built frontend instead,
+// and it is deliberately bare: every file comes back as application/octet-stream, a directory
+// comes back as a JSON listing rather than index.html, and nothing is missing-file aware. This
+// stub reproduces those three behaviours so the wrapper is tested against what it actually faces.
+function diskFetcher(files: Record<string, string>): Fetcher {
+  return {
+    fetch: async (input: RequestInfo | URL) => {
+      const path = new URL(typeof input === 'string' ? input : (input as Request).url ?? input)
+          .pathname;
+      if (files[path] !== undefined) {
+        return new Response(files[path], {
+          headers: { 'content-type': 'application/octet-stream', 'content-length': '1' },
+        });
+      }
+      if (path === '/') {
+        return new Response('[{"name":"index.html","type":"file"}]', {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('not found', { status: 404 });
+    },
+  } as unknown as Fetcher;
+}
+
+const DIST = {
+  '/index.html': '<!doctype html><title>app</title>',
+  '/assets/app.js': 'export default 1',
+  '/assets/app.css': 'body{}',
+  '/favicon.svg': '<svg/>',
+};
+
+async function get(env: Env, path: string, headers: Record<string, string> = {}) {
+  return router.fetch!(new Request(`https://example.com${path}`, { headers }), env,
+      {} as ExecutionContext);
+}
+
+const NAV = { accept: 'text/html,application/xhtml+xml' };
+
+describe('static assets on a bare file server', () => {
+  const env = () => makeEnv({ ASSETS: diskFetcher(DIST) });
+
+  it('labels assets with a usable Content-Type', async () => {
+    // The whole point: browsers hard-refuse ES modules and stylesheets served as
+    // application/octet-stream, which is all a disk service ever sends.
+    expect((await get(env(), '/assets/app.js')).headers.get('content-type'))
+        .toBe('text/javascript; charset=utf-8');
+    expect((await get(env(), '/assets/app.css')).headers.get('content-type'))
+        .toBe('text/css; charset=utf-8');
+    expect((await get(env(), '/favicon.svg')).headers.get('content-type'))
+        .toBe('image/svg+xml');
+  });
+
+  it('serves index.html at / instead of a directory listing', async () => {
+    const res = await get(env(), '/', NAV);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    expect(await res.text()).toContain('<!doctype html>');
+  });
+
+  it('falls back to index.html for client-side routes', async () => {
+    for (const path of ['/workspaces', '/blueprint/123', '/deep/nested/route']) {
+      const res = await get(env(), path, NAV);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain('<!doctype html>');
+    }
+  });
+
+  it('falls back for a navigation to a missing path that looks like a file', async () => {
+    const res = await get(env(), '/report.2026', NAV);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('<!doctype html>');
+  });
+
+  it('keeps 404s for missing sub-resources', async () => {
+    // A broken script tag must stay visible rather than being answered with HTML, which would
+    // surface as a confusing syntax error instead of a missing file.
+    expect((await get(env(), '/assets/missing.js')).status).toBe(404);
+    expect((await get(env(), '/assets/missing.css')).status).toBe(404);
+  });
+
+  it('passes real files through untouched, including their body', async () => {
+    const res = await get(env(), '/assets/app.js');
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('export default 1');
+  });
+});
+
 describe('router email', () => {
   it('forwards to GATEKEEPER_EMAIL when bound', async () => {
     const received: unknown[] = [];

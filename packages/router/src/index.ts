@@ -21,6 +21,74 @@ export interface Env {
   [key: string]: unknown;
 }
 
+// Extension → Content-Type. Needed only for the standalone deployment: workerd's `disk` service
+// is deliberately bare and labels every file `application/octet-stream`, which browsers hard-refuse
+// for ES modules and stylesheets. Its own docs say to wrap it in a Worker that fills in the
+// metadata. Cloudflare's `assets` binding does this natively, so on a normal deploy the map just
+// restates what the platform already sent.
+const CONTENT_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".map": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".avif": "image/avif",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".otf": "font/otf",
+  ".txt": "text/plain; charset=utf-8",
+  ".wasm": "application/wasm",
+};
+
+// The extension of the last path segment, or "" when it has none.
+function extensionOf(pathname: string): string {
+  const slash = pathname.lastIndexOf("/");
+  const dot = pathname.lastIndexOf(".");
+  return dot > slash ? pathname.slice(dot).toLowerCase() : "";
+}
+
+function withContentType(res: Response, ext: string, status?: number): Response {
+  const type = CONTENT_TYPES[ext];
+  if (!type && status === undefined) return res;
+  const headers = new Headers(res.headers);
+  if (type) headers.set("content-type", type);
+  return new Response(res.body, { status: status ?? res.status, headers });
+}
+
+function serveIndex(assets: Fetcher, url: URL): Promise<Response> {
+  // The SPA fallback answers 200, not the underlying status: the route exists, it is just
+  // resolved client-side.
+  return assets.fetch(new Request(new URL("/index.html", url)))
+      .then((res) => withContentType(res, ".html", 200));
+}
+
+// Implements `not_found_handling: "single-page-application"` on top of a bare file server.
+async function serveAssets(assets: Fetcher, req: Request, url: URL): Promise<Response> {
+  const isNavigation = req.method === "GET"
+      && (req.headers.get("accept") ?? "").includes("text/html");
+  const ext = extensionOf(url.pathname);
+
+  // A path with no file extension is a client-side route, and `/` is a directory -- which a bare
+  // file server answers with a JSON listing rather than index.html. Neither is worth asking about.
+  if (ext === "" && isNavigation) return serveIndex(assets, url);
+
+  const res = await assets.fetch(req);
+  if (res.ok) return withContentType(res, ext);
+
+  // Missing sub-resources keep their 404, so a broken script tag stays visible instead of being
+  // silently answered with HTML.
+  return isNavigation ? serveIndex(assets, url) : res;
+}
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -45,7 +113,7 @@ export default {
     // callbacks.
 
     if (env.ASSETS) {
-      return env.ASSETS.fetch(req);
+      return serveAssets(env.ASSETS, req, url);
     }
 
     // Dev only: with no assets binding here, everything else goes to the backend.
