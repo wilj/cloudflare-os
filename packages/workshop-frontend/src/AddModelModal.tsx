@@ -13,9 +13,8 @@ interface AddModelModalProps {
   onSuccess: () => void
   authenticatedApi: RpcStub<AuthenticatedApi>
   aiConfig: AiGatewayInfo | null
-  // Ids the user already has configured, so the curated list can say so rather than offering a
-  // plain unticked box. Re-ticking an existing id overwrites its stored config, and that is the
-  // natural gesture after a partial add.
+  // Ids the user already has configured, so the curated list can mark them. Ticking one again
+  // overwrites its stored config, since addModel is an upsert keyed on model id.
   configuredModelIds?: string[]
 }
 
@@ -348,9 +347,7 @@ export default function AddModelModal({
                           <span className="text-sm">
                             {model.name}
                             {already && (
-                              <span className="ml-2 text-xs text-kumo-subtle">
-                                added — re-add to replace the key
-                              </span>
+                              <span className="ml-2 text-xs text-kumo-subtle">Added</span>
                             )}
                             <span className="block text-xs text-kumo-subtle">{model.note}</span>
                           </span>

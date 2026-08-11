@@ -199,10 +199,10 @@ describe('curated models', () => {
     expect(api.setQuickModel).toHaveBeenCalled()
   })
 
-  it('marks models the user already has, rather than offering a plain box', async () => {
+  it('marks models the user already has', async () => {
     const api = makeApi()
     await render(api, { configuredModelIds: [CURATED_MODELS[0].id] })
-    expect(container.textContent).toContain('re-add to replace the key')
+    expect(container.textContent).toContain('Added')
   })
 
   it('cannot submit without both a selection and a key', async () => {
