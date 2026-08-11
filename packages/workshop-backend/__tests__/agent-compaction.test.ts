@@ -3,7 +3,8 @@ import {type AiChatAuthorInfo, type AiChatMessage, type AiChatMessageBody}
   from "@gadgets/workshop-shared/api";
 import {
   buildCompactionState, buildSummaryPrompt, findCompactionBoundary, findProtectedFromSequence,
-  getModelTokenLimits, isCompactionTurn, protectRetainedReverts, shouldCompactChat, startsAgentTurn,
+  compactionTriggerRatio, getModelTokenLimits, isCompactionTurn, protectRetainedReverts,
+  shouldCompactChat, startsAgentTurn,
 } from "../src/agent-compaction";
 import * as Y from "yjs";
 import type {Api, AssistantMessage, Message, Model} from "@earendil-works/pi-ai";
@@ -105,6 +106,47 @@ describe("compaction trigger", () => {
     expect(getModelTokenLimits({
       provider: "anthropic", model: "claude-opus-5", apiToken: "",
     })).toEqual({inputBudget: 1_000_000, maxOutputTokens: undefined});
+  });
+
+  it("uses an OpenRouter model's real window instead of the 128k assumption", () => {
+    // These ids are absent from SUGGESTED_MODELS, so before pi's catalog was consulted they all
+    // compacted against 128k -- ~109k on a model with a 1.05M window.
+    expect(getModelTokenLimits({
+      provider: "openai", model: "openai/gpt-5.6-luna", apiToken: "",
+      apiUrl: "https://openrouter.ai/api/v1",
+    })).toEqual({inputBudget: 1_050_000, maxOutputTokens: undefined});
+  });
+
+  it("does not withhold the catalog's output cap from the budget", () => {
+    // minimax-m3 publishes a 512k output against a 524k window. Withholding it the way a Workers AI
+    // reservation is withheld would leave a ~12k prompt budget and compact on every turn.
+    let {inputBudget, maxOutputTokens} = getModelTokenLimits({
+      provider: "openai", model: "minimax/minimax-m3", apiToken: "",
+      apiUrl: "https://openrouter.ai/api/v1",
+    });
+    expect(maxOutputTokens).toBeUndefined();
+    expect(inputBudget).toBeGreaterThan(500_000);
+  });
+
+  it("applies a per-model compaction trigger, and leaves everything else at the default", () => {
+    // Opting a model in is adding it to the table; nothing else moves.
+    expect(compactionTriggerRatio({
+      provider: "openai", model: "openai/gpt-5.6-luna", apiToken: "",
+    })).toBe(0.45);
+    expect(compactionTriggerRatio({
+      provider: "anthropic", model: "claude-opus-5", apiToken: "",
+    })).toBe(0.85);
+    expect(compactionTriggerRatio({
+      provider: "openai", model: "some/unlisted-model", apiToken: "",
+    })).toBe(0.85);
+  });
+
+  it("honours the trigger ratio it is given, and defaults when it is not", () => {
+    expect(shouldCompactChat(46_000, 100_000, 0.45)).toBe(true);
+    expect(shouldCompactChat(44_999, 100_000, 0.45)).toBe(false);
+    // Omitting it keeps the historical behaviour.
+    expect(shouldCompactChat(84_999, 100_000)).toBe(false);
+    expect(shouldCompactChat(85_000, 100_000)).toBe(true);
   });
 
   // Workers AI rejects a request whose prompt and response cap together exceed the window, so a

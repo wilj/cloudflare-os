@@ -20,7 +20,8 @@ import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./
 import type { ModelHandle } from "./ai-models";
 import {
   buildCompactionState, buildSummaryPrompt, COMPACTION_SYSTEM_PROMPT, estimateProjectionTokens,
-  findCompactionBoundary, findProtectedFromSequence, getModelTokenLimits, isCompactionTurn,
+  compactionTriggerRatio, findCompactionBoundary, findProtectedFromSequence, getModelTokenLimits,
+  isCompactionTurn,
   protectRetainedReverts, shouldCompactChat,
   type CompactionProjectionMessage,
 } from "./agent-compaction";
@@ -2221,7 +2222,8 @@ export async function runAgent(
     : estimateProjectionTokens(projection) + Math.ceil(systemPrompt.length / 4);
 
   let compactionTurn = isCompactionTurn(chatMessages);
-  if (compactionTurn || shouldCompactChat(contextTokens, inputBudget)) {
+  let triggerRatio = compactionTriggerRatio(compaction.modelConfig);
+  if (compactionTurn || shouldCompactChat(contextTokens, inputBudget, triggerRatio)) {
     // Returning below skips the flush that ends a normal turn, so do it here: replay may have
     // re-adopted a crashed turn's unrecorded edits, creations and binding additions, and they must
     // be durable before this turn stops carrying them. The message lands above any boundary chosen
@@ -2230,7 +2232,7 @@ export async function runAgent(
 
     let compactedTo = findCompactionBoundary(
         projection, inputBudget, contextTokens,
-        checkpoint?.compactedTo, findProtectedFromSequence(chatMessages));
+        checkpoint?.compactedTo, findProtectedFromSequence(chatMessages), triggerRatio);
     compactedTo = protectRetainedReverts(compactedTo, chatMessages, checkpoint?.compactedTo);
     if (compactedTo !== undefined) {
       emitStreamEvent({type: "compacting"});

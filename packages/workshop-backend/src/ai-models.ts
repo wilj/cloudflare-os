@@ -141,9 +141,10 @@ function catalogModel(provider: AiModelConfig["provider"], modelId: string): Mod
   }
 }
 
-// Token limits for a synthesized model. SUGGESTED_MODELS remains authoritative (compaction
-// budgets in agent-compaction.ts are computed from it and must not change); pi's catalog fills
-// gaps for models we don't list, and unknown models get conservative defaults.
+// Token limits for a synthesized model. SUGGESTED_MODELS remains authoritative; pi's catalog fills
+// gaps for models we don't list, and unknown models get conservative defaults. Compaction budgets
+// in agent-compaction.ts resolve their window through modelContextWindow() below, which applies the
+// same precedence.
 function modelTokenWindow(config: AiModelConfig, catalog: Model<Api> | undefined)
     : { contextWindow: number, maxTokens: number } {
   const suggested = SUGGESTED_MODELS[config.provider]?.[config.model];
@@ -153,6 +154,19 @@ function modelTokenWindow(config: AiModelConfig, catalog: Model<Api> | undefined
         (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined) ??
         catalog?.maxTokens ?? 4096,
   };
+}
+
+// The model's full context window, resolved the same way as above: the deployment's own table
+// first, then pi's catalog, then a conservative default.
+//
+// Exported deliberately narrowly. agent-compaction needs the window and nothing else, and exporting
+// catalogModel() or modelTokenWindow() instead would pull this module -- its Durable Object, its RPC
+// validation, four provider stream implementations and pi's model catalogs -- into that module's
+// import graph and its tests. There is no cycle either way; this keeps the surface honest.
+export function modelContextWindow(config: AiModelConfig): number {
+  return SUGGESTED_MODELS[config.provider]?.[config.model]?.contextWindow
+      ?? catalogModel(config.provider, config.model)?.contextWindow
+      ?? 128_000;
 }
 
 // Compat flags for a Workers AI model reached over its OpenAI-compatible endpoint (direct REST
