@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { RpcStub } from 'capnweb'
 import { PublicApi, AuthVendorInfo } from '@gadgets/workshop-shared/api'
 import { Button, Banner } from '@cloudflare/kumo'
+import { classifyRpcError } from '../../rpcErrors'
 
 interface OAuthButtonsProps {
   rpcStub: RpcStub<PublicApi>
@@ -86,7 +87,24 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
       else window.location.reload()
     } catch (err) {
       if (!mountedRef.current) return
-      setError(err instanceof Error ? err.message : 'Could not sign in')
+      // A dropped RPC session is not a failed sign-in, and reporting it as one is actively
+      // misleading: the session token arrives over `attempt.wait()`, so losing the connection loses
+      // the token even when the gatekeeper completed and the server logged a successful login.
+      //
+      // It concentrates on the *first* sign-in from a device, which is what makes the raw message
+      // so confusing. That is the only attempt where the provider shows a consent screen, so the
+      // pop-up stays in front for longer — long enough for a mobile browser to freeze this tab and
+      // close its WebSocket. Retrying then succeeds, because consent is already granted.
+      //
+      // The token cannot be recovered after the fact, so the honest thing is to say the attempt was
+      // interrupted and that retrying will work, rather than surfacing a transport string.
+      setError(
+        classifyRpcError(err) === 'connection'
+          ? 'Lost the connection while signing in. Please try again.'
+          : err instanceof Error
+            ? err.message
+            : 'Could not sign in',
+      )
       setPending(null)
     }
   }
