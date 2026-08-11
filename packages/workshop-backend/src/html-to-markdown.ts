@@ -52,7 +52,7 @@ class MarkdownCollector {
         return;
       case "li": {
         this.#break(1);
-        const list = [...this.#stack].reverse().find(f => f.tag === "ul" || f.tag === "ol");
+        const list = this.#stack.toReversed().find(f => f.tag === "ul" || f.tag === "ol");
         const indent = "  ".repeat(Math.max(0, this.#listDepth() - 1));
         if (list?.ordered) {
           list.listIndex = (list.listIndex ?? 0) + 1;
