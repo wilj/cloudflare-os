@@ -325,6 +325,7 @@ function ProvidersPage() {
 
       {/* Add model dialog */}
       <AddModelModal
+        configuredModelIds={models.map(m => m.id)}
         visible={sheetOpen}
         onCancel={() => setSheetOpen(false)}
         onSuccess={() => {

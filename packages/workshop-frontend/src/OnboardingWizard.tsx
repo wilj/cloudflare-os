@@ -32,6 +32,7 @@ import { useSiteName } from './ServerConfigContext'
 import SiteLogo from './components/SiteLogo'
 import { useDocumentTitle } from './useDocumentTitle'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
+import { DEFAULT_CURATED_MODEL_ID } from './curatedModels'
 
 // ─── constants ──────────────────────────────────────────────────────────────────
 
@@ -123,9 +124,13 @@ export default function OnboardingWizard({
       ])
       setModels(modelList)
       setAiConfig(cfg)
-      // Default to the first model in the list
+      // Prefer the recommended default over whatever sorts first. Durable Object storage lists
+      // keys in lexicographic order, so "deepseek/..." leads a curated set -- and that is the one
+      // model of the five that cannot read images. Falling into it silently would make the least
+      // capable option everyone's default.
       if (modelList.length > 0) {
-        setSelectedModelId((prev) => prev ?? modelList[0].id)
+        setSelectedModelId((prev) => prev
+          ?? (modelList.find(m => m.id === DEFAULT_CURATED_MODEL_ID) ?? modelList[0]).id)
       }
     } catch (err) {
       console.error('Failed to load models:', err)
@@ -713,6 +718,7 @@ export default function OnboardingWizard({
     {/* Add Model Modal — outside the wizard's inner content so it's not
         clipped by overflow-hidden on the sliding panel */}
     <AddModelModal
+      configuredModelIds={models.map(m => m.id)}
       visible={addModelOpen}
       onCancel={() => setAddModelOpen(false)}
       onSuccess={() => {

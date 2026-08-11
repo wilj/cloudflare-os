@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react'
-import { Dialog, Button, Input, Select, SensitiveInput, Collapsible, useKumoToastManager } from '@cloudflare/kumo'
+import { Dialog, Button, Checkbox, Input, Select, SensitiveInput, Collapsible, useKumoToastManager } from '@cloudflare/kumo'
 import { AiChatAuthorInfo, AiModelConfig, AiModelProvider, AiGatewayInfo, SUGGESTED_MODELS } from '@gadgets/workshop-shared/api'
 import { RpcStub } from 'capnweb'
+import {
+  CURATED_API_URL, CURATED_MODELS, CURATED_PROVIDER, DEFAULT_CURATED_MODEL_ID,
+} from './curatedModels'
 import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
 
 interface AddModelModalProps {
@@ -10,6 +13,10 @@ interface AddModelModalProps {
   onSuccess: () => void
   authenticatedApi: RpcStub<AuthenticatedApi>
   aiConfig: AiGatewayInfo | null
+  // Ids the user already has configured, so the curated list can say so rather than offering a
+  // plain unticked box. Re-ticking an existing id overwrites its stored config, and that is the
+  // natural gesture after a partial add.
+  configuredModelIds?: string[]
 }
 
 type SelectionType =
@@ -89,7 +96,9 @@ function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null
   return options
 }
 
-export default function AddModelModal({ visible, onCancel, onSuccess, authenticatedApi, aiConfig }: AddModelModalProps) {
+export default function AddModelModal({
+  visible, onCancel, onSuccess, authenticatedApi, aiConfig, configuredModelIds,
+}: AddModelModalProps) {
   const toasts = useKumoToastManager()
 
   const [loading, setLoading] = useState(false)
@@ -109,6 +118,12 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   // Advanced settings collapsible state
   const [advancedOpen, setAdvancedOpen] = useState(false)
 
+  // Curated block: tick several, supply the key once.
+  const [curatedChecked, setCuratedChecked] = useState<Set<string>>(new Set())
+  const [curatedToken, setCuratedToken] = useState('')
+  const [curatedLoading, setCuratedLoading] = useState(false)
+  const [curatedError, setCuratedError] = useState<string | null>(null)
+
   const gatewayMode = aiConfig?.enabled === true
   const enabledProviders: Set<string> | null = gatewayMode
     ? new Set(aiConfig.enabledProviders)
@@ -126,6 +141,10 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
       setApiUrl('')
       setErrors({})
       setAdvancedOpen(false)
+      setCuratedChecked(new Set())
+      setCuratedToken('')
+      setCuratedLoading(false)
+      setCuratedError(null)
     }
   }, [visible])
 
@@ -177,6 +196,74 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
 
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
+  }
+
+  const configured = new Set(configuredModelIds ?? [])
+
+  const toggleCurated = (id: string) => {
+    setCuratedError(null)
+    setCuratedChecked(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  // Adds every ticked model with one shared key. `addModel` performs no network call and does not
+  // validate the key, so failures here are transport-level and correlated -- a lost socket rejects
+  // the rest identically. allSettled rather than all: an unhandled rejection would be reported to
+  // the server by the global error handler.
+  const handleCuratedSubmit = async () => {
+    if (curatedChecked.size === 0 || !curatedToken.trim() || curatedLoading) return
+    setCuratedLoading(true)
+    setCuratedError(null)
+
+    const chosen = CURATED_MODELS.filter(m => curatedChecked.has(m.id))
+    const results = await Promise.allSettled(chosen.map(model =>
+      authenticatedApi.addModel(
+        { type: 'agent', id: model.id, name: model.name },
+        {
+          provider: CURATED_PROVIDER,
+          model: model.id,
+          apiToken: curatedToken.trim(),
+          apiUrl: CURATED_API_URL,
+        },
+      )))
+
+    const added = chosen.filter((_, i) => results[i].status === 'fulfilled')
+    const failed = chosen.length - added.length
+
+    if (added.length > 0) {
+      // Only when the user has no default yet. Setting it unconditionally would silently replace a
+      // choice they already made -- the same hazard the "already added" marker guards against.
+      try {
+        if (await authenticatedApi.getPreferredModel() === null
+            && added.some(m => m.id === DEFAULT_CURATED_MODEL_ID)) {
+          await authenticatedApi.setPreferredModel(DEFAULT_CURATED_MODEL_ID)
+        }
+        // Chat titles are generated only when a quick model is set, and nothing else in this flow
+        // sets one -- today that is discoverable only by clicking a row on the providers page.
+        if (await authenticatedApi.getQuickModel() === null) {
+          await authenticatedApi.setQuickModel(
+            added.find(m => m.id === DEFAULT_CURATED_MODEL_ID)?.id ?? added[0].id)
+        }
+      } catch {
+        // Preferences are a convenience; the models are already added.
+      }
+    }
+
+    setCuratedLoading(false)
+    if (failed > 0) {
+      setCuratedError(added.length > 0
+        ? `Added ${added.length}, but ${failed} failed. Check your connection and try again.`
+        : 'Could not add the models. Check your connection and try again.')
+      if (added.length === 0) return
+    }
+    toasts.add({
+      title: added.length === 1 ? 'Added 1 model' : `Added ${added.length} models`,
+      variant: 'success',
+    })
+    onSuccess()
   }
 
   const handleSubmit = async () => {
@@ -239,6 +326,73 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
         </Dialog.Title>
 
         <div className="space-y-4">
+          {/* Curated models: tick several, supply the key once. Hidden in AI Gateway mode, where
+              credentials come from the deployment and addModel rejects unenabled providers. */}
+          {!gatewayMode && CURATED_MODELS.length > 0 && (
+            <div className="rounded-lg border border-kumo-line p-4">
+              <div className="text-sm font-medium mb-1">Recommended models</div>
+              <div className="text-xs text-kumo-subtle mb-3">
+                Pick any number. They all use one OpenRouter key, entered once.
+              </div>
+
+              <div className="space-y-2 mb-4">
+                {CURATED_MODELS.map(model => {
+                  const already = configured.has(model.id)
+                  return (
+                    <div key={model.id} className="flex items-start gap-2">
+                      <Checkbox
+                        checked={curatedChecked.has(model.id)}
+                        onCheckedChange={() => toggleCurated(model.id)}
+                        disabled={curatedLoading}
+                        label={
+                          <span className="text-sm">
+                            {model.name}
+                            {already && (
+                              <span className="ml-2 text-xs text-kumo-subtle">
+                                added — re-add to replace the key
+                              </span>
+                            )}
+                            <span className="block text-xs text-kumo-subtle">{model.note}</span>
+                          </span>
+                        }
+                      />
+                    </div>
+                  )
+                })}
+              </div>
+
+              <SensitiveInput
+                label="OpenRouter API key"
+                placeholder="sk-or-v1-..."
+                description="One key for all of the above. Get one at openrouter.ai/keys"
+                value={curatedToken}
+                onChange={(e) => setCuratedToken(e.target.value)}
+                className="w-full text-sm"
+                disabled={curatedLoading}
+              />
+
+              {curatedError && (
+                <div className="mt-2 text-xs text-kumo-danger">{curatedError}</div>
+              )}
+
+              <Button
+                variant="primary"
+                className="mt-3 w-full justify-center"
+                onClick={handleCuratedSubmit}
+                loading={curatedLoading}
+                disabled={curatedChecked.size === 0 || !curatedToken.trim()}
+              >
+                {curatedChecked.size <= 1 ? 'Add model' : `Add ${curatedChecked.size} models`}
+              </Button>
+
+              <div className="flex items-center gap-3 mt-4">
+                <div className="h-px flex-1 bg-kumo-line" />
+                <span className="text-xs text-kumo-subtle">or configure one yourself</span>
+                <div className="h-px flex-1 bg-kumo-line" />
+              </div>
+            </div>
+          )}
+
           {/* Model / Provider selection */}
           <Select
             label={gatewayMode ? 'Select Provider' : 'Select Model'}
