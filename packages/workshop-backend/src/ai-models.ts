@@ -12,6 +12,7 @@ import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.mode
 import { CLOUDFLARE_WORKERS_AI_MODELS } from "@earendil-works/pi-ai/providers/cloudflare-workers-ai.models";
 import { GOOGLE_MODELS } from "@earendil-works/pi-ai/providers/google.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
+import { OPENROUTER_MODELS } from "@earendil-works/pi-ai/providers/openrouter.models";
 import { ApprovalQueue, Gatekeeper, ResourceDescription, stripTrailingSlashes } from '@gadgets/workshop-shared/gatekeeper';
 import { LanguageModelBinding } from "./ai-model-binding";
 import AI_MODEL_BINDING_TYPES from "./ai-model-binding.txt";
@@ -117,10 +118,22 @@ const ZERO_COST: ModelCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 
 
 // Consult pi's builtin catalog for cost/compat metadata of a known model id. Unknown models are
 // fine (synthesized with zero cost). Import per-provider, not providers/all.
+//
+// The `openai` case also consults pi's OpenRouter catalog. A deployment reaching OpenRouter does so
+// through this provider with `apiUrl` overridden, and its ids are namespaced ("openai/gpt-5.6-luna"),
+// so they miss OPENAI_MODELS, which is keyed on bare ids. Every such model then synthesized with no
+// cost, a default context window, and `input: ["text","image"]` — the last of which is the damaging
+// one: a text-only model is advertised as accepting images, so pi's downgrade path never fires, the
+// provider 404s, and because the attachment is already persisted every later turn replays it.
+//
+// The lookup is keyed on the id rather than tested before the switch on purpose: Workers AI ids are
+// namespaced too ("@cf/zai-org/glm-5.2"), and an `includes("/")` test would route them here and lose
+// their cost and compat handling.
 function catalogModel(provider: AiModelConfig["provider"], modelId: string): Model<Api> | undefined {
   switch (provider) {
     case "anthropic": return (ANTHROPIC_MODELS as Record<string, Model<Api>>)[modelId];
-    case "openai": return (OPENAI_MODELS as Record<string, Model<Api>>)[modelId];
+    case "openai": return (OPENROUTER_MODELS as Record<string, Model<Api>>)[modelId]
+        ?? (OPENAI_MODELS as Record<string, Model<Api>>)[modelId];
     case "google": return (GOOGLE_MODELS as Record<string, Model<Api>>)[modelId];
     case "cloudflare": return (CLOUDFLARE_WORKERS_AI_MODELS as Record<string, Model<Api>>)[modelId];
     case "ollama": return undefined;
@@ -605,7 +618,12 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
           cost: catalog?.cost ?? ZERO_COST,
           ...window,
           thinkingLevelMap: catalog?.thinkingLevelMap,
-          compat: catalog?.compat,
+          // An OpenRouter catalog entry describes itself as `openai-completions` and its `compat`
+          // flags are shaped for that API (`thinkingFormat`, `supportsDeveloperRole`). This handle
+          // forces `openai-responses`, whose compat flags are a disjoint set, so carrying them over
+          // would apply completions semantics to a responses request. A genuine OpenAI entry's
+          // compat is responses-shaped and is kept.
+          compat: catalog?.provider === "openrouter" ? undefined : catalog?.compat,
         },
         apiKey: config.apiToken,
         sessionAffinity,

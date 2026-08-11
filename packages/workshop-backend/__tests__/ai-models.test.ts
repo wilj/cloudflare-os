@@ -283,6 +283,68 @@ describe("getModel direct routing (no gateway)", () => {
     expect(request.headers.get("cf-aig-metadata")).toBeNull();
   }, 15000);
 
+  // OpenRouter is reached through the `openai` provider with `apiUrl` overridden, and its ids are
+  // namespaced, so they miss OPENAI_MODELS (keyed on bare ids). Before pi's OpenRouter catalog was
+  // consulted, every such model was synthesized with no cost, a default window, and -- the damaging
+  // part -- `input: ["text","image"]`.
+  it("resolves an OpenRouter id from pi's OpenRouter catalog", () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "openai",
+      model: "openai/gpt-5.6-luna",
+      apiToken: "or-token",
+      apiUrl: "https://openrouter.ai/api/v1",
+    }, INITIATOR);
+
+    expect(handle.model.baseUrl).toBe("https://openrouter.ai/api/v1");
+    expect(handle.model.api).toBe("openai-responses");
+    expect(handle.model.contextWindow).toBe(1_050_000);
+    // Cost drives every spend figure the product reports; uncataloged ids are flatly zero.
+    expect(handle.model.cost.input).toBeGreaterThan(0);
+    expect(handle.model.cost.output).toBeGreaterThan(0);
+  });
+
+  it("advertises a text-only OpenRouter model as text-only", () => {
+    // The assertion that matters most. `input` is what pi's downgradeUnsupportedImages() checks; if
+    // a text-only model claims images, the provider 404s instead, and because the attachment is
+    // already persisted the chat replays it on every later turn and cannot recover.
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "openai",
+      model: "deepseek/deepseek-v4-flash-0731",
+      apiToken: "or-token",
+      apiUrl: "https://openrouter.ai/api/v1",
+    }, INITIATOR);
+
+    expect(handle.model.input).toEqual(["text"]);
+  });
+
+  it("drops OpenRouter compat flags, which describe a different API", () => {
+    // Catalog entries declare `api: "openai-completions"` and carry compat flags shaped for it.
+    // This handle forces `openai-responses`, whose flags are a disjoint set.
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "openai",
+      model: "openai/gpt-5.6-luna",
+      apiToken: "or-token",
+      apiUrl: "https://openrouter.ai/api/v1",
+    }, INITIATOR);
+
+    expect(handle.model.compat).toBeUndefined();
+  });
+
+  it("still resolves a bare OpenAI id, and a Workers AI id, from their own catalogs", () => {
+    // Workers AI ids are namespaced too ("@cf/..."), so a naive "id contains a slash" test would
+    // route them into the OpenRouter catalog and lose their cost and compat handling.
+    const openai = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "openai", model: "gpt-5.6-luna", apiToken: "t",
+    }, INITIATOR);
+    expect(openai.model.baseUrl).toBe("https://api.openai.com/v1");
+    expect(openai.model.cost.input).toBeGreaterThan(0);
+
+    const workersAi = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      ...WORKERS_AI_CONFIG, accountId: "acct", apiToken: "t",
+    }, INITIATOR);
+    expect(workersAi.model.provider).not.toBe("openrouter");
+  });
+
   it("uses the config's own account and token for direct Workers AI", async () => {
     // Outside gateway mode, Workers AI is BYOK like any other provider: credentials come from
     // the model config (never from env, which only configures gateway mode).
