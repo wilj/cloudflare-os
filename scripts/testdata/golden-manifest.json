@@ -786,6 +786,48 @@
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/scheduler"
       }
     },
+    "gatekeeper-search": {
+      "bindings": [],
+      "compatibilityDate": "2026-02-02",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
+      ],
+      "inputs": [],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "search.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "SearchGatekeeper",
+            "SearchAccountState"
+          ],
+          "tag": "v0"
+        }
+      ],
+      "modules": [
+        {
+          "name": "search.js",
+          "r2Key": "blobs/modules/5eb999b5d1665cc2ba1e373f375f7ea8022c5215f06e0493cec02ef395db7c2d",
+          "sha256": "5eb999b5d1665cc2ba1e373f375f7ea8022c5215f06e0493cec02ef395db7c2d",
+          "size": 59,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "search",
+      "singleton": true,
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/search"
+      }
+    },
     "gatekeeper-slack": {
       "bindings": [
         {

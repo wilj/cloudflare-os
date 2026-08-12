@@ -79,7 +79,7 @@ vi.mock('@cloudflare/kumo', () => {
 })
 
 const { default: AddModelModal } = await import('./AddModelModal')
-const { CURATED_API_URL, CURATED_MODELS, DEFAULT_CURATED_MODEL_ID } =
+const { CURATED_API_URL, CURATED_MODELS, DEFAULT_CURATED_MODEL_ID, QUICK_CURATED_MODEL_ID } =
   await import('./curatedModels')
 
 let container: HTMLDivElement
@@ -197,6 +197,27 @@ describe('curated models', () => {
     await click(buttonSaying(/^Add model$/)!)
 
     expect(api.setQuickModel).toHaveBeenCalled()
+  })
+
+  // Titles are throwaway work the user never asked for. Spending the everyday driver on them cost
+  // 3.3x more per output token and put them behind that model's rate limit, so titles failed while
+  // ordinary chat worked. The quick slot takes the cheap model whenever it was added.
+  it('gives the quick slot to the cheap model, not the default one', async () => {
+    const quickIndex = CURATED_MODELS.findIndex(m => m.id === QUICK_CURATED_MODEL_ID)
+    const defaultIndex = CURATED_MODELS.findIndex(m => m.id === DEFAULT_CURATED_MODEL_ID)
+    expect(quickIndex).toBeGreaterThanOrEqual(0)
+    expect(quickIndex).not.toBe(defaultIndex)
+
+    const api = makeApi()
+    await render(api)
+    await click(checkboxes()[defaultIndex])
+    await click(checkboxes()[quickIndex])
+    await typeKey('sk-or-v1-secret')
+    await click(buttonSaying(/^Add 2 models$/)!)
+
+    expect(api.setQuickModel).toHaveBeenCalledWith(QUICK_CURATED_MODEL_ID)
+    // ...while the everyday driver still becomes the model chat actually uses.
+    expect(api.setPreferredModel).toHaveBeenCalledWith(DEFAULT_CURATED_MODEL_ID)
   })
 
   it('marks models the user already has', async () => {

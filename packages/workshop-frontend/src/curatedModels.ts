@@ -60,3 +60,16 @@ export const CURATED_MODELS: CuratedModel[] = [
 // Preselected after a curated add, so the text-only model does not become the default purely by
 // sorting first in storage.
 export const DEFAULT_CURATED_MODEL_ID = "openai/gpt-5.6-luna";
+
+// The "quick" model, used for throwaway work the user never asked for — today, generating a chat
+// title from the first message.
+//
+// Deliberately not DEFAULT_CURATED_MODEL_ID. Spending the everyday driver on titles cost 3.3x more
+// per output token for no benefit, and put that work in the queue behind a popular model: titles
+// were failing with OpenRouter's shared-pool rate limit while ordinary chat was fine. Being unable
+// to read images does not matter for summarising a sentence.
+//
+// Still a named id rather than "whichever is cheapest": prices live in pi's OpenRouter catalog and
+// are read at runtime, and a second copy here to sort by is exactly what the note at the top of
+// this file says not to build.
+export const QUICK_CURATED_MODEL_ID = "deepseek/deepseek-v4-flash-0731";

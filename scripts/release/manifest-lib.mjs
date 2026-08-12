@@ -46,6 +46,7 @@ const NO_DEFAULT_CRED_INPUTS = new Set([
   "gatekeeper-scheduler",     // auto-provisioned; no third-party OAuth app
   "gatekeeper-mcp",           // MCP OAuth uses dynamic client registration, not a static app
   "gatekeeper-mcp-portal",    // same MCP OAuth chain as gatekeeper-mcp
+  "gatekeeper-search",        // auto-provisioned; the engine's key lives in the search instance
 ]);
 
 // Not installable on customer instances: Email Routing needs a zone, which workers.dev-hosted
@@ -69,7 +70,10 @@ const PREINSTALL = new Set(["gatekeeper-context", "gatekeeper-scheduler"]);
 // ambient gatekeeper, so a second install would hand every user a duplicate ambient capsule.
 // Independent of PREINSTALL in principle; the two sets coincide today only because every ambient
 // gatekeeper we ship is also preinstalled.
-const SINGLETON = new Set(["gatekeeper-context", "gatekeeper-scheduler"]);
+// gatekeeper-search declares an agent singleton, so a second install would hand every user a
+// duplicate ambient capsule. Deliberately not in PREINSTALL: it needs a search instance to reach,
+// which a fresh core deploy has no way to provide, and a preinstall has nobody to ask for one.
+const SINGLETON = new Set(["gatekeeper-context", "gatekeeper-scheduler", "gatekeeper-search"]);
 
 export const DEFAULT_CRED_INPUTS = [
   {

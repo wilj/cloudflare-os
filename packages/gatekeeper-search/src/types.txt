@@ -1,0 +1,68 @@
+// Web Search finds pages on the open web. It is the counterpart to the `webFetch` tool: `webFetch`
+// retrieves a URL you already have, this finds the URL in the first place.
+//
+// Use it whenever a question depends on something outside the workspace — current events, a
+// library's present API, prices, anything where guessing from training data would be a guess. Read
+// what you find with `webFetch` when a snippet is not enough.
+//
+// Results come from whichever engines this deployment has configured, so quality and freshness are
+// a property of the instance rather than of this interface — including whether they cost anything.
+// Prefer one well-formed query over several near-identical ones.
+
+/** How recently a page must have been published to be included. */
+export type WebSearchTimeRange = "day" | "week" | "month" | "year";
+
+export interface WebSearchOptions {
+  /**
+   * How many results to return, from those the search instance yields for one query. Defaults to
+   * 10, capped at 25; there is no paging, so a larger limit cannot reach further than the instance
+   * already looked. Must be a positive number — 0 or a negative throws.
+   */
+  limit?: number;
+
+  /**
+   * Which corpus to search: "general", "news", "science", "it", "images", "videos", "map", "music",
+   * "files", "social media". Omitted, the search instance uses its own default. Availability
+   * depends on the deployment's engines, and an unconfigured category simply returns nothing.
+   */
+  category?: string;
+
+  /** Two-letter language code, e.g. "en". Defaults to the deployment's setting. */
+  language?: string;
+
+  /** Restrict to recently published pages. Omit unless recency actually matters. */
+  timeRange?: WebSearchTimeRange;
+}
+
+export interface WebSearchResult {
+  /** The page title as the engine reported it. Falls back to the URL when absent. */
+  title: string;
+
+  /** Absolute URL. Pass it to the `webFetch` tool to read the page. */
+  url: string;
+
+  /** The engine's snippet or extract. Often empty — treat it as a hint, not as the page. */
+  content: string;
+
+  /**
+   * Publication date as the engine reported it — usually ISO 8601, but passed through unchecked, so
+   * parse defensively.
+   */
+  publishedDate?: string;
+
+  /** Which configured engine produced this result, or "unknown" if it did not say. */
+  engine: string;
+}
+
+export interface WebSearchSession {
+  /**
+   * Searches the web and returns results ranked best-first.
+   *
+   * Write the query the way a person would type it into a search box: keywords and phrases, not a
+   * sentence addressed to an assistant. An empty query, or one over 500 characters, throws.
+   *
+   * Returns an empty array when nothing matched — that is an answer, not an error, and usually
+   * means the query was too narrow rather than that the subject does not exist.
+   */
+  search(query: string, options?: WebSearchOptions): Promise<WebSearchResult[]>;
+}

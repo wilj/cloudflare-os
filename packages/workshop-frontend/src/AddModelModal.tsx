@@ -4,6 +4,7 @@ import { AiChatAuthorInfo, AiModelConfig, AiModelProvider, AiGatewayInfo, SUGGES
 import { RpcStub } from 'capnweb'
 import {
   CURATED_API_URL, CURATED_MODELS, CURATED_PROVIDER, DEFAULT_CURATED_MODEL_ID,
+  QUICK_CURATED_MODEL_ID,
 } from './curatedModels'
 import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
 
@@ -242,9 +243,11 @@ export default function AddModelModal({
         }
         // Chat titles are generated only when a quick model is set, and nothing else in this flow
         // sets one -- today that is discoverable only by clicking a row on the providers page.
+        //
+        // The cheap model, not the default one: see QUICK_CURATED_MODEL_ID.
         if (await authenticatedApi.getQuickModel() === null) {
           await authenticatedApi.setQuickModel(
-            added.find(m => m.id === DEFAULT_CURATED_MODEL_ID)?.id ?? added[0].id)
+            added.find(m => m.id === QUICK_CURATED_MODEL_ID)?.id ?? added[0].id)
         }
       } catch {
         // Preferences are a convenience; the models are already added.
