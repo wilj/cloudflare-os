@@ -343,6 +343,22 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return sessionToken.toBase64();
   }
 
+  // Mints a session without a credential, for the deployment operator's post-install tooling.
+  // Refuses for an account that does not exist, so a typo cannot conjure a user DO holding a valid
+  // session — authenticate() checks only that the session row is there.
+  //
+  // The sole caller is the InternalAdmin entrypoint, which is served on a separate workerd socket
+  // that no reverse proxy routes to. Nothing reachable from the public socket calls this.
+  async mintOperatorSession(): Promise<string | null> {
+    if (!this.storage.created.get()) return null;
+    return this.#newSessionToken();
+  }
+
+  async revokeSession(token: string): Promise<void> {
+    let hash = await crypto.subtle.digest('SHA-256', Uint8Array.fromBase64(token));
+    this.storage.sessions.delete(new Uint8Array(hash).toHex());
+  }
+
   async login(passwordHash: Uint8Array): Promise<string | null> {
     let passwordHashHash = new Uint8Array(await crypto.subtle.digest('SHA-256', passwordHash));
 

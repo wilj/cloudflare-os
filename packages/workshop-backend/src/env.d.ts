@@ -83,6 +83,10 @@ declare global {
       // Minimum connected-account balance (USD) to proceed via BYOK. Defaults to
       // MINIMUM_CLOUDFLARE_BALANCE.
       MINIMUM_CLOUDFLARE_BALANCE?: string;
+
+      // Bearer secret for the InternalAdmin entrypoint, which mints session tokens for the
+      // deployment operator. Unset (the default) disables that entrypoint outright.
+      INTERNAL_ADMIN_SECRET?: string;
     }
   }
 }
